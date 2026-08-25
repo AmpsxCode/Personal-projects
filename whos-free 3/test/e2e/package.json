@@ -1,0 +1,8 @@
+{
+  "name": "whos-free-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Browser checks. Deliberately OUTSIDE the root package.json so Workers Builds never installs any of this.",
+  "scripts": { "check": "node run.mjs" },
+  "devDependencies": { "playwright": "^1.48.0" }
+}
