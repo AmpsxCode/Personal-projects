@@ -25,7 +25,7 @@
   "d1_databases": [
     // "1fc5fe8d-0a7c-4c5e-858f-5ed2d25b4508" is overwritten by the Deploy to Cloudflare button when it
     // provisions the database. If it isn't, paste the UUID from the D1 page.
-    { "binding": "DB", "database_name": "whos-free-db", "database_id": "PLACEHOLDER" }
+    { "binding": "DB", "database_name": "whos-free-db", "database_id": "1fc5fe8d-0a7c-4c5e-858f-5ed2d25b4508" }
   ],
 
   // Cron Triggers are UTC only - there is no timezone option. Cloudflare's
