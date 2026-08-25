@@ -1,0 +1,43 @@
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "whos-free",
+  "main": "./src/worker.js",
+
+  // DELIBERATELY before 2026-08-04. On or after that date the Workers runtime
+  // enables nodejs_compat + nodejs_compat_v2 by default, which makes process.env
+  // defined and removes the guardrail described in README "Cloudflare notes".
+  // Do not bump this to today without reading that section first.
+  "compatibility_date": "2026-08-01",
+
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+
+    // LOAD-BEARING. Static assets are matched BEFORE the Worker by default, so
+    // without this a request to /api/* is served index.html and res.json()
+    // throws "Unexpected token '<'". '*' is a deep match, so /api/* covers
+    // /api/plan/abc123. '/' is deliberately absent - the no-session screen is
+    // handled client-side so the home screen stays a static edge hit.
+    "run_worker_first": ["/api/*", "/g/*", "/c/*"]
+  },
+
+  "d1_databases": [
+    // "PLACEHOLDER" is overwritten by the Deploy to Cloudflare button when it
+    // provisions the database. If it isn't, paste the UUID from the D1 page.
+    { "binding": "DB", "database_name": "whos-free-db", "database_id": "00000000-0000-0000-0000-000000000000" }
+  ],
+
+  // Cron Triggers are UTC only - there is no timezone option. Cloudflare's
+  // weekday numbering is 1=Sunday..7=Saturday, which is NOT standard cron, so
+  // the three-letter form is the unambiguous one. 17:00 UTC = 18:00 London in
+  // summer, 17:00 in winter. Free plan allows 5 cron triggers per account.
+  "triggers": { "crons": ["0 17 * * SUN"] },
+
+  "observability": { "enabled": true },
+
+  "workers_dev": true,
+  // Without this, preview_urls defaults to the value of workers_dev and you get
+  // a SECOND live hostname serving the same capability URL.
+  "preview_urls": false
+}

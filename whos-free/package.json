@@ -1,0 +1,14 @@
+{
+  "name": "whos-free",
+  "private": true,
+  "version": "1.0.0",
+  "description": "A busy/free calendar for one friend group. Cloudflare Worker + D1.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:tz": "for tz in Europe/London UTC Pacific/Auckland America/Los_Angeles; do echo \"=== TZ=$tz\"; TZ=$tz node --test test/*.test.js || exit 1; done"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
