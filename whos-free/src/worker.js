@@ -8,10 +8,47 @@ import { handleApi } from './api.js';
 import { joinPage, shell, tokenExchange } from './pages.js';
 import { nudgeNoteKey, weeklyDigest } from './nudge.js';
 import { buildState, windowFor } from './read.js';
-import { html, originOf } from './util.js';
+import { html, originOf, randomId } from './util.js';
 import { addDays, format } from '../public/shared/plainday.js';
 
 let loggedInvite = false;
+
+/**
+ * The HMAC signing key for sessions and nudge tokens.
+ *
+ * A dashboard secret called SESSION_SECRET wins if one exists. If it does not,
+ * the Worker generates 32 random bytes on first boot and keeps them in the
+ * database.
+ *
+ * Why: a dashboard secret has to be added by hand, and if it is added in the
+ * wrong order relative to a deploy the running version comes up without it -
+ * at which point every request 503s and there is no obvious cause. A key the
+ * app owns cannot be missing, cannot be forgotten, and cannot be wiped by a
+ * deploy.
+ *
+ * The trade: the key sits in D1 rather than in the secret store, so anyone with
+ * dashboard access to this account can read it. For a busy/free calendar among
+ * friends that is the same practical trust boundary - and the worst case if it
+ * leaks is that someone who ALSO has the group link can act as another person.
+ * Rotating it is deleting one row, which logs everyone out.
+ */
+async function signingKey(env, nowMs) {
+  if (env.SESSION_SECRET) return env.SESSION_SECRET;
+
+  const existing = await env.DB.prepare('SELECT v FROM notes WHERE k = ?1')
+    .bind('signing_key').first();
+  if (existing && existing.v) return existing.v;
+
+  // ON CONFLICT DO NOTHING then re-read, so two simultaneous first requests
+  // cannot end up trusting different keys.
+  const fresh = randomId(32);
+  await env.DB.prepare(
+    'INSERT INTO notes (k, v, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(k) DO NOTHING',
+  ).bind('signing_key', fresh, nowMs).run();
+  const settled = await env.DB.prepare('SELECT v FROM notes WHERE k = ?1')
+    .bind('signing_key').first();
+  return settled ? settled.v : fresh;
+}
 
 async function logInviteOnce(env, origin) {
   if (loggedInvite) return;
@@ -33,15 +70,10 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    if (!env.SESSION_SECRET) {
-      return html(shell({
-        title: 'Setup needed',
-        body: `<main class="pad"><h1>One thing left</h1><p>Add a secret called <code>SESSION_SECRET</code> in the Cloudflare dashboard under <strong>Settings &rsaquo; Variables and Secrets</strong>, then reload. Any long random string will do.</p></main>`,
-      }), { status: 503 });
-    }
-
     try {
       await ensureBooted(env, nowMs);
+      // Must come after boot: it reads a table boot creates.
+      env.SESSION_SECRET = await signingKey(env, nowMs);
       ctx.waitUntil(logInviteOnce(env, originOf(request)));
 
       if (path.startsWith('/api/')) return handleApi(request, env, ctx, nowMs, path);
@@ -81,6 +113,7 @@ export default {
   async scheduled(controller, env, ctx) {
     const nowMs = Date.now();
     await ensureBooted(env, nowMs);
+    env.SESSION_SECRET = await signingKey(env, nowMs);
     const group = await loadGroup(env);
     if (!group) return;
 

@@ -123,15 +123,33 @@ async function load() {
     res = await fetch(`/api/state?${params}`, { headers });
   } catch {
     store.offline = true;
-    render();
+    if (!store.state) {
+      showProblem('No connection', "Couldn't reach the app. Check your signal and try again.");
+    } else {
+      render();
+    }
     return;
   }
   store.offline = false;
   if (res.status === 304) return;
   if (res.status === 401) { showNoSession(); return; }
-  if (!res.ok) { say('Could not load. Retrying.'); return; }
+  if (!res.ok) {
+    // A 5xx here is usually the Worker itself failing, and the body is often
+    // an HTML page rather than JSON - so surface the status rather than trying
+    // to parse it.
+    const detail = `The server answered with error ${res.status}.`
+      + (res.status >= 500 ? ' Check your Worker\u2019s Logs in the Cloudflare dashboard.' : '');
+    if (!store.state) showProblem("The app couldn't load", detail);
+    else say(`Couldn't refresh (error ${res.status}). Still showing what I had.`);
+    return;
+  }
   store.etag = res.headers.get('ETag');
-  store.state = await res.json();
+  try {
+    store.state = await res.json();
+  } catch {
+    showProblem("The app couldn't load", 'The server sent something unreadable. Check the Worker Logs.');
+    return;
+  }
   if (!store.month) store.month = { y: parse(store.today).y, m: parse(store.today).m };
   if (!store.weekStart) store.weekStart = format(startOfWeek(parse(store.today)));
   render();
@@ -170,6 +188,24 @@ function showNoSession() {
   noSession.hidden = false;
   app.hidden = true;
   stopPolling();
+}
+
+/**
+ * The visible failure state.
+ *
+ * Both #noSession and #app start hidden, and say() writes to a
+ * screen-reader-only region - so any error path that just returns leaves a
+ * blank white page with no clue what happened. That is the worst possible
+ * failure, so every path that cannot render the app has to come through here.
+ */
+function showProblem(title, detail) {
+  noSession.hidden = false;
+  app.hidden = true;
+  noSession.innerHTML = `<h1>${esc(title)}</h1>`
+    + `<p class="lede">${esc(detail)}</p>`
+    + '<button class="btn primary" onclick="location.reload()">Try again</button>';
+  stopPolling();
+  say(`${title}. ${detail}`);
 }
 
 // ---------------------------------------------------------------- polling ----
@@ -1126,10 +1162,16 @@ function openSettings() {
 // --------------------------------------------------------------------- boot ---
 
 (async function boot() {
-  store.route = location.pathname;
-  await load();
-  await drain();
-  startPolling();
+  try {
+    store.route = location.pathname;
+    await load();
+    await drain();
+    startPolling();
+  } catch (err) {
+    // Anything unhandled during startup would otherwise leave a blank page.
+    showProblem('Something broke starting up', String((err && err.message) || err));
+    return;
+  }
   // If the day rolls over while the tab is open, pick it up.
   setInterval(() => {
     const t = londonToday();
