@@ -35,7 +35,12 @@ export const CONFIG = {
   PBKDF2_ITERATIONS: 6000,
 
   // Ring on the avatar row fills at this much confirmed coverage.
-  RING_FILLED_DAYS: 14,
+  // A fortnight of coverage means today THROUGH today+13 inclusive — which is
+  // what CONFIRM_DAYS: 14 writes, and which leaves confirmedThrough at
+  // today+13. Requiring 14 meant a flawless confirm still left your own chip
+  // hollow, so the one person who had done exactly what the app asked was told
+  // they hadn't.
+  RING_FILLED_DAYS: 13,
   // Rows per band before the "show all" expander.
   BAND_CAP: 5,
   // How many chips in the quick-change strip.

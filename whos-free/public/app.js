@@ -9,8 +9,8 @@ import {
   parse, range, relativeAge, startOfWeek, weekdayName,
 } from './shared/plainday.js';
 import {
-  BUSY, FREE, MAYBE, PATTERN_KEYS, buildBands, formatTally, missing, myFreeSlots,
-  names, patternKey, slotLabel, slotTitle, slotsFor, tally,
+  BUSY, FREE, MAYBE, PATTERN_KEYS, buildBands, formatTally, myFreeSlots,
+  names, nextConfirmWindow, patternKey, slotLabel, slotTitle, slotsFor, tally,
 } from './shared/tally.js';
 import { CONFIG, COPY, HORIZON_DAYS, SLOT_WINDOWS } from './shared/config.js';
 import { nowMs, today as londonToday } from './shared/clock.js';
@@ -32,6 +32,7 @@ const store = {
   rangeAnchor: null,
   lastBulk: null,        // stays reversible after the snackbar has gone
   ack: null,
+  showAll: null,         // headcount of the one expanded band, or null
   expanded: new Set(),
   nudgeDismissed: false,
   polling: null,
@@ -294,9 +295,46 @@ function dayRollup(day) {
   if (!anyAnswer) return { variant: 'notAnswered', best: 0, ramp: 0 };
   if (best === total && total > 0) return { variant: 'free', best, everyone: true, ramp: 5 };
   if (slots.length > 1 && best !== worst && best > 0) return { variant: 'partly', best, ramp: 0 };
-  if (best === 0) return { variant: 'busy', best: 0, ramp: 0 };
+  if (best === 0) {
+    // "Nobody is free" and "hardly anyone has said" look identical in a count,
+    // but they are not the same thing and must not look the same. The dark
+    // busy fill is loud, so it is reserved for days where at least half the
+    // group has EXPLICITLY said busy. Anything less reads as quiet, not blocked.
+    const explicitBusy = Math.max(...tallies.map((t) => t.busy), 0);
+    if (total > 0 && explicitBusy >= Math.ceil(total / 2)) return { variant: 'busy', best: 0, ramp: 0 };
+    return { variant: 'notAnswered', best: 0, ramp: 0 };
+  }
   const ramp = Math.min(5, Math.max(1, Math.ceil((best / Math.max(1, total)) * 5)));
   return { variant: `roll${ramp}`, best, ramp };
+}
+
+/**
+ * The people who are free (or maybe) on a day, for the stacked bars in a month
+ * cell. One bar each, in their own hue, so a good weekend visibly fills up with
+ * colour and a dead Tuesday stays empty.
+ *
+ * Decoration only — the cell's accessible name carries the real numbers, and
+ * hue is never the only way to identify anyone (their name is on the chip row
+ * and in the day sheet).
+ */
+function dayPeople(day) {
+  const out = [];
+  for (const person of roster()) {
+    let best = null;
+    for (const slot of slotsFor(day)) {
+      const e = entriesFor(day, slot)[person.id];
+      if (!e || !e.s) continue;
+      if (e.s === FREE && e.src === 'EXPLICIT' && !e.stale) { best = 'free'; break; }
+      if (e.s === FREE || e.s === MAYBE) best = best || 'soft';
+    }
+    if (best) out.push({ id: person.id, seed: person.colourSeed, soft: best === 'soft' });
+  }
+  return out;
+}
+
+function plansOn(day) {
+  const s = S();
+  return s ? s.plans.filter((p) => p.day === day) : [];
 }
 
 function coverage() {
@@ -359,30 +397,42 @@ function viewHome() {
       && diffDays(parse(store.today), parse(p.confirmedThrough)) >= CONFIG.RING_FILLED_DAYS;
     const label = p.confirmedThrough
       ? `${p.name}, filled in until ${formatMedium(p.confirmedThrough)}`
-      : `${p.name}, nothing filled in`;
-    return `<button class="av ${filled ? 'av-filled' : 'av-hollow'}" data-nudge="${esc(p.id)}"
-      title="${esc(label)}" aria-label="${esc(label)}. Copy a nudge.">${esc(p.name.slice(0, 2))}</button>`;
+      : `${p.name}, hasn't filled anything in`;
+    return `<button class="person-chip ${filled ? 'filled' : 'hollow'}" data-nudge="${esc(p.id)}"
+      style="--seed:${Number(p.colourSeed) || 0}"
+      title="${esc(label)}" aria-label="${esc(label)}. Copy a nudge to send them.">
+      <span class="dot" aria-hidden="true"></span>${esc(p.name)}${
+  filled ? '<span class="tick" aria-hidden="true">✓</span>' : ''}</button>`;
   }).join('');
 
-  const plans = s.plans.length ? `<section class="plans"><h2 class="h-sm">Plans</h2>${
-    s.plans.map((p) => `<div class="plan"><div><strong>${esc(p.title)}</strong><div class="slot-sub">${
-      esc(slotTitle(p.day, p.slot))}</div></div>
-      <button class="btn small ghost" data-plan-del="${esc(p.id)}">Remove</button></div>`).join('')
-  }</section>` : '';
+  const plans = s.plans.length ? `<div class="plan-strip" aria-label="Plans coming up">${
+    s.plans.map((p) => `<button class="plan-pill" data-open="${esc(p.day)}"
+      aria-label="${esc(p.title)} on ${esc(slotTitle(p.day, p.slot))}. Open that day.">
+      <span class="plan-title">${esc(p.title)}</span>
+      <span class="plan-when">${esc(formatShort(p.day))} · ${esc(slotLabel(p.slot))}</span>
+    </button>`).join('')}</div>` : '';
 
-  const bandHtml = bands.map((band) => `
+  // One band is expanded at a time because store.showAll holds a single
+  // headcount: on a phone, two fully expanded bands is a scroll wall.
+  const bandHtml = bands.map((band) => {
+    const open = store.showAll === band.count;
+    const shown = open ? band.allRows : band.rows;
+    return `
     <section class="band">
       <div class="band-head">
         <h2>${esc(band.label)}${band.everyone ? ' <span class="star" aria-hidden="true">★</span>' : ''}</h2>
         ${band.maybeTotal ? `<span class="band-maybe">(+${band.maybeTotal} maybe)</span>` : ''}
       </div>
-      ${band.rows.map((r, i) => slotRow(r, i === 0 && band === bands[0])).join('')}
-      ${band.hidden ? `<button class="btn small ghost" data-showall="${band.count}">Show all ${band.allRows.length}</button>` : ''}
-    </section>`).join('');
+      ${shown.map((r, i) => slotRow(r, i === 0 && band === bands[0])).join('')}
+      ${band.hidden ? `<button class="btn small ghost" data-showall="${band.count}"
+        data-showtotal="${band.allRows.length}" aria-expanded="${open}">${
+  open ? 'Show fewer' : `Show all ${band.allRows.length}`}</button>` : ''}
+    </section>`;
+  }).join('');
 
   const maybeHtml = maybeDependent.length ? `
     <section class="band">
-      <div class="band-head"><h2>Could work if the maybes are in</h2></div>
+      <div class="band-head"><h2>Could work if the maybes are in 🤞</h2></div>
       ${maybeDependent.slice(0, CONFIG.BAND_CAP).map((r) => slotRow(r, false)).join('')}
     </section>` : '';
 
@@ -398,7 +448,7 @@ function viewHome() {
   const nudgeShown = s.nudge ? s.nudge.text.split('\n').filter((l) => !/^Update yours:/.test(l)).join('\n') : '';
   const nudge = (s.nudge && !store.nudgeDismissed) ? `
     <section class="ack">
-      <strong>This week’s nudge</strong>
+      <strong>This week’s nudge 💬</strong>
       <p class="hint" style="white-space:pre-line">${esc(nudgeShown)}</p>
       <div class="row">
         <button class="btn small" data-copy="nudge">Copy for the group chat</button>
@@ -410,9 +460,10 @@ function viewHome() {
   <header class="head">
     <div class="head-row">
       <h1>${esc(s.group.name)}</h1>
-      <button class="btn small ghost" data-nav="/settings" data-settings="1">Settings</button>
+      <button class="btn small ghost" data-nav="/settings" data-settings="1" aria-label="Settings">⚙︎</button>
     </div>
-    <div class="avatars">${avatars}</div>
+  </header>
+  <div class="people" aria-label="Everyone in the group">${avatars}</div>
   </header>
 
   <div class="coverage ${cov.level}">
@@ -435,16 +486,41 @@ function viewHome() {
     evening ${SLOT_WINDOWS.EVENING.from}–${SLOT_WINDOWS.EVENING.to}. ${total} in the group.</p>`;
 }
 
+// "missing" is the word that turns an answer into a failure, so this line never
+// uses it. Kit blocking out six straight weeks on day one ANSWERED - he should
+// not read as the same kind of gap as Sam, who has never opened the app - and a
+// value the app derived from someone's typical week is the app's guess, not
+// their omission. One clause per bucket, in this order; `free` is deliberately
+// absent because this line exists to say who still needs chasing.
+const WHO_CLAUSES = [
+  ['busy', "can't make it"],
+  ['maybe', 'maybe'],
+  ['notAnswered', 'no answer yet'],
+  ['assumed', 'not confirmed'],
+  ['stale', 'worth a re-check'],
+];
+
+/**
+ * "can't make it: Kit · maybe: Sam · not confirmed: Jo" - HTML, names escaped.
+ *
+ * The buckets partition the roster, so naming each one separately also fixes
+ * the double-print: a maybe-person used to appear in the missing list AND in a
+ * trailing maybe clause. Nobody is named twice here.
+ */
+function slotWho(t, people) {
+  const parts = WHO_CLAUSES
+    .filter(([bucket]) => t.by[bucket].length)
+    .map(([bucket, label]) => `${label}: <em>${esc(names(people, t.by[bucket]))}</em>`);
+  return parts.length ? parts.join(' · ') : 'everyone’s in';
+}
+
 function slotRow(r, isTop) {
   const key = `${r.day}|${r.slot}`;
   const open = store.expanded.has(key);
-  const miss = missing(r.t);
-  const maybeNames = names(roster(), r.t.by.maybe);
   return `
   <button class="slot-row ${isTop ? 'top' : ''}" data-expand="${esc(key)}" aria-expanded="${open}">
     <span class="slot-title">${esc(slotTitle(r.day, r.slot))}</span>
-    <span class="slot-sub">${miss.length ? `missing: <em>${esc(names(roster(), miss))}</em>` : 'everyone’s in'}${
-      maybeNames ? ` · maybe: <em>${esc(maybeNames)}</em>` : ''}</span>
+    <span class="slot-sub">${slotWho(r.t, roster())}</span>
     <span class="slot-sub">${esc(formatTally(r.t))}</span>
     ${open ? breakdown(r) : ''}
   </button>`;
@@ -454,7 +530,8 @@ function slotRow(r, isTop) {
 function breakdown(r) {
   const groups = [
     ['Free', r.t.by.free, 'free'], ['Maybe', r.t.by.maybe, 'maybe'], ['Busy', r.t.by.busy, 'busy'],
-    ['Assumed', r.t.by.assumed, null], ['Stale', r.t.by.stale, null],
+    ['Not confirmed (from their typical week)', r.t.by.assumed, null],
+    ['Worth a re-check', r.t.by.stale, null],
     [COPY.NOT_ANSWERED, r.t.by.notAnswered, 'notAnswered'],
   ];
   const body = groups.filter(([, ids]) => ids.length).map(([label, ids, variant]) => {
@@ -473,8 +550,15 @@ function breakdown(r) {
     const person = roster().find((p) => p.id === id);
     return `<button class="btn small ghost" data-nudge="${esc(id)}">Nudge ${esc(person ? person.name : '')}</button>`;
   }).join(' ');
+  // This markup is emitted INSIDE <button class="slot-row" data-expand=...>, and
+  // the HTML parser auto-closes that outer button at the first nested <button> -
+  // so everything in this row parses as a SIBLING of .slot-row and
+  // closest('[data-expand]') does not match it. That is why data-open works, and
+  // why the plan action belongs in this same row rather than nested any deeper.
   return `<dl class="breakdown">${body}</dl>
     <div class="row" style="margin-top:8px;flex-wrap:wrap">${nudges}
+    <button class="btn small" data-makeplan="${esc(r.day)}|${esc(r.slot)}"
+      aria-label="Make ${esc(formatShort(r.day))} ${esc(slotLabel(r.slot))} the plan">Make this the plan</button>
     <button class="btn small" data-open="${esc(r.day)}">Open ${esc(formatShort(r.day))}</button></div>`;
 }
 
@@ -492,30 +576,37 @@ function viewMonth() {
     const mine = myMark(c.key, 'EVENING');
     const sel = store.selection.has(c.key);
     const slots = slotsFor(c.key);
-    const barClass = { free: 'b-free', maybe: 'b-maybe', busy: 'b-busy', dimFree: 'b-free', dimMaybe: 'b-maybe', dimBusy: 'b-busy', notAnswered: 'b-none' };
-    const bars = slots.length > 1
-      ? `<span class="cell-bars" aria-hidden="true">${slots.map((sl) => {
-        const v = variantOf(entriesFor(c.key, sl)[me()]);
-        return `<i class="${barClass[v] || 'b-none'}"></i>`;
-      }).join('')}</span>`
+    const people = dayPeople(c.key);
+    const plans = plansOn(c.key);
+    // At most five bars: beyond that they stop being countable at this size and
+    // the numeral is doing the work anyway.
+    const bars = people.length
+      ? `<span class="cell-people" aria-hidden="true">${people.slice(0, 5).map((pp) => `<i class="person-bar${
+        pp.soft ? ' soft' : ''}" style="--seed:${Number(pp.seed) || 0}"></i>`).join('')}</span>`
+      : '<span class="cell-people" aria-hidden="true"></span>';
+    const planPill = plans.length
+      ? `<span class="cell-plan" aria-hidden="true">${esc(plans[0].title)}</span>`
       : '';
     const myVariant = variantOf(mine);
-    // Self-sufficient accessible name, under ~120 characters: weekday, date,
-    // month, my state, group count.
-    const label = `${isToday ? 'Today, ' : ''}${formatLong(c.key)}. You: ${VARIANT_LABEL[myVariant]}. ${roll.best} of ${roster().length} free.`;
+    // Self-sufficient accessible name: weekday, date, month, my state, group
+    // count, and anything planned. A screen reader user should never have to
+    // explore the headers to know where they are.
+    const label = `${isToday ? 'Today, ' : ''}${formatLong(c.key)}. You: ${VARIANT_LABEL[myVariant]}. `
+      + `${roll.best} of ${roster().length} free.${plans.length ? ` Plan: ${plans[0].title}.` : ''}`;
     return `<td class="cell-wrap"><button class="cell v v-${roll.variant} ${isToday ? 'cell-today' : ''} ${
       c.inMonth ? '' : 'cell-out'} ${sel ? 'cell-sel' : ''} ${roll.everyone ? 'v-everyone' : ''}"
       data-day="${esc(c.key)}" tabindex="-1" aria-label="${esc(label)}"
       ${sel ? 'aria-selected="true"' : ''}>
-      <span class="cell-num">${c.day.d}</span>
-      <span class="cell-count">${roll.everyone ? '★' : ''}${roll.best || ''}</span>
-      ${bars}</button></td>`;
+      <span class="cell-head">
+        <span class="cell-num">${c.day.d}</span>
+        <span class="cell-count">${roll.everyone ? '★' : ''}${roll.best || ''}</span>
+      </span>
+      ${bars}${planPill}</button></td>`;
   }).join('')}</tr>`).join('');
 
   return `
   <header class="head"><div class="head-row"><h1>${esc(formatMonth(store.month))}</h1>
     <button class="btn small ghost" data-nav="/">Best days</button></div></header>
-  ${legend()}
   <div class="month">
     <table role="${store.selectMode ? 'grid' : 'table'}" ${store.selectMode ? 'aria-multiselectable="true"' : ''}
       aria-label="${esc(formatMonth(store.month))}">
@@ -524,6 +615,7 @@ function viewMonth() {
       <tbody id="grid">${body}</tbody>
     </table>
   </div>
+  ${legend()}
   ${bottomBar()}`;
 }
 
@@ -582,6 +674,10 @@ function viewWeek() {
   const days = range(format(start), format(addDays(start, 20)));   // three weeks
   const rows = days.map((day) => {
     const slots = slotsFor(day);
+    const plans = plansOn(day);
+    const planRow = plans.length
+      ? `<div class="week-plans">${plans.map((p) => `<span class="week-plan">${esc(p.title)}</span>`).join('')}</div>`
+      : '';
     return `<div class="week-row">
       <div class="week-label">${esc(formatShort(day))}</div>
       <div class="week-slots">${slots.map((slot) => {
@@ -591,14 +687,14 @@ function viewWeek() {
           aria-label="${esc(formatLong(day))} ${esc(slotLabel(slot))}. You: ${esc(VARIANT_LABEL[v])}. ${t.free} of ${roster().length} free.">
           <span>${esc(slotLabel(slot).slice(0, 3))} ${t.free || ''}</span></button>`;
     }).join('')}</div>
-    </div>`;
+    </div>${planRow}`;
   }).join('');
   return `<header class="head"><div class="head-row"><h1>Three weeks</h1>
       <button class="btn small ghost" data-nav="/">Best days</button></div>
       <p class="hint">Tap any slot to cycle it through free, maybe, busy. This is the fastest way to fill in a lot at once.</p>
     </header>
-    ${legend()}
     <div class="pad">${rows}</div>
+    ${legend()}
     ${bottomBar()}`;
 }
 
@@ -651,10 +747,24 @@ function viewSetup() {
 
 function viewConfirm() {
   const s = S();
-  const to = format(addDays(parse(store.today), CONFIG.CONFIRM_DAYS - 1));
+  const mine = roster().find((p) => p.id === me());
+  const win = nextConfirmWindow(
+    mine ? mine.confirmedThrough : null, store.today, CONFIG.CONFIRM_DAYS, HORIZON_DAYS,
+  );
+  if (!win.from) {
+    return `<main class="pad">
+      <h1>You're all caught up 🌿</h1>
+      <p class="lede">You're filled in as far ahead as this app looks — through
+        ${esc(formatMedium(win.horizonEnd))}. Nothing to confirm.</p>
+      <button class="btn primary wide" data-nav="/">Back to best days</button>
+    </main>`;
+  }
+  store.confirmFrom = win.from;
+  store.confirmTo = win.to;
+  const to = win.to;
   const unknown = [];
   const guessed = [];
-  for (const day of range(store.today, to)) {
+  for (const day of range(win.from, to)) {
     for (const slot of slotsFor(day)) {
       const mine = entriesFor(day, slot)[me()];
       const override = store.overrides && store.overrides[`${day}|${slot}`];
@@ -680,7 +790,8 @@ function viewConfirm() {
   };
 
   return `<main class="pad">
-    <h1>Your next two weeks</h1>
+    <h1>${esc(formatShort(win.from))} to ${esc(formatShort(win.to))}</h1>
+    <p class="lede">Confirming the next stretch after what you've already filled in.</p>
     ${unknown.length ? `
       <h2>We can’t guess these — ${unknown.length} to answer</h2>
       <p class="hint">Your typical week doesn’t say anything about these, and we won’t invent an answer.
@@ -744,12 +855,16 @@ function daySheetHtml(day) {
           </div>
           <p class="hint">Maybe: ${esc(COPY.MAYBE_HELP)}</p>
           ${othersHtml(day, slot)}
+          <button class="btn ghost wide" data-addplan="${esc(day)}|${esc(slot)}">+ Add a plan for the ${
+      esc(slotLabel(slot))}</button>
         </fieldset>`;
   }).join('')}
 
-      ${plansHere.length ? `<h4>Plans</h4>${plansHere.map((p) => `<div class="plan"><strong>${esc(p.title)}</strong>
-        <button class="btn small ghost" data-plan-del="${esc(p.id)}">Remove</button></div>`).join('')}` : ''}
-      <button class="btn ghost wide" data-addplan="${esc(day)}">+ Add a plan</button>
+      ${plansHere.length ? `<h4>Plans</h4>${plansHere.map((p) => `<div class="plan">
+        <span><strong>${esc(p.title)}</strong>
+        <span class="plan-when">${esc(slotLabel(p.slot))}</span></span>
+        <button class="btn small ghost" data-plan-del="${esc(p.id)}"
+          aria-label="Remove ${esc(p.title)}, ${esc(slotLabel(p.slot))}">Remove</button></div>`).join('')}` : ''}
     </div>
   </div>`;
 }
@@ -800,7 +915,11 @@ function wireDaySheet(dialog, day) {
       return;
     }
     const addPlan = e.target.closest('[data-addplan]');
-    if (addPlan) { await addPlanFlow(addPlan.dataset.addplan); dialog.close(); dialog.remove(); return; }
+    if (addPlan) {
+      const [d, s] = addPlan.dataset.addplan.split('|');
+      await addPlanFlow(d, s);
+      dialog.close(); dialog.remove(); return;
+    }
     const delPlan = e.target.closest('[data-plan-del]');
     if (delPlan) { await deletePlan(delPlan.dataset.planDel); refreshSheet(dialog, day); return; }
     const nudgeBtn = e.target.closest('[data-nudge]');
@@ -859,24 +978,43 @@ async function bulkApply(state) {
   render();
 }
 
+/**
+ * The requests one undo needs: one per (previous value, slot) pair.
+ *
+ * Keyed on the slot as well as the value because /api/marks/bulk CROSS-PRODUCTS
+ * days x slots. A group naming two days and two slots would write its value to
+ * all four pairs - including pairs it never touched - and a later CLEAR group
+ * would then wipe the rows an earlier group had just restored. Naming exactly
+ * one slot per request means the server's expansion can only ever land on pairs
+ * that were really changed.
+ *
+ * Deliberately pure - no store, no DOM - so test/bulk-undo.test.js can lift it
+ * out of this file and run the shipped code instead of a copy of it.
+ */
+function undoRequests(changed) {
+  const groups = new Map();
+  for (const c of changed) {
+    const k = `${c.from === null ? 'CLEAR' : c.from}|${c.slot}`;
+    if (!groups.has(k)) groups.set(k, { value: c.from, slot: c.slot, days: new Set() });
+    groups.get(k).days.add(c.day);
+  }
+  // No eveningsOnly: that flag belongs to the original selection UI. On the way
+  // back it would silently drop every morning and afternoon we owe someone.
+  return [...groups.values()].map((g) => ({
+    days: [...g.days],
+    slots: [g.slot],
+    state: g.value === undefined ? null : g.value,
+  }));
+}
+
 async function undoBulk() {
   const changed = store.lastBulk;
   if (!changed) return;
   store.lastBulk = null;
-  // Replay the previous values back through the same endpoint, grouped by the
-  // value they are being restored to. No server-side undo token.
-  const groups = new Map();
-  for (const c of changed) {
-    const k = c.from === null ? 'CLEAR' : c.from;
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(c);
-  }
-  for (const [value, items] of groups) {
-    await mutate('/api/marks/bulk', {
-      days: [...new Set(items.map((i) => i.day))],
-      slots: [...new Set(items.map((i) => i.slot))],
-      state: value === 'CLEAR' ? null : value,
-    });
+  // Replay the previous values back through the same endpoint, one request per
+  // (value, slot) group. No server-side undo token.
+  for (const req of undoRequests(changed)) {
+    await mutate('/api/marks/bulk', req);
   }
   say('Put back.');
   render();
@@ -909,19 +1047,52 @@ async function copyNudge(personId) {
   }
 }
 
-async function addPlanFlow(day) {
+/**
+ * A plan always inherits a slot, it never guesses one.
+ *
+ * This used to ask a second question that DEFAULTED to 'evening', so the happy
+ * path - accept the default - filed an afternoon's 5-of-7 under the evening.
+ * The app wrote down a decision nobody made. Every caller now passes the slot
+ * whose row the user was actually reading, so the fallback below is a guard
+ * against a stale data attribute, not an option offered to anyone.
+ */
+async function addPlanFlow(day, slot) {
   const title = window.prompt('What is it? (everyone in the group can see this)');
   if (!title) return;
-  const slots = slotsFor(day);
-  const slot = slots.length === 1 ? slots[0]
-    : (window.prompt(`Which? ${slots.map(slotLabel).join(' / ')}`, 'evening') || 'evening').toUpperCase();
-  await mutate('/api/plan', { day, slot: slots.includes(slot) ? slot : slots[slots.length - 1], title });
+  const chosen = slot && slotsFor(day).includes(slot) ? slot : slotsFor(day)[slotsFor(day).length - 1];
+  const data = await mutate('/api/plan', { day, slot: chosen, title });
+  // The other six find out from the group chat, not from a polling window. The
+  // clipboard write has to happen inside a fresh click handler with no await in
+  // front of it - the only shape Safari honours - so it hangs off the snackbar
+  // button rather than firing here. The text is in the snackbar either way, so
+  // a refused clipboard still leaves something to long-press and copy.
+  if (data && data.share) {
+    showSnack(data.share, 'Copy for the group chat', () => {
+      // showSnack has already removed the snackbar by the time this runs, so a
+      // clipboard that refuses - insecure context, denied permission, or no
+      // clipboard object at all - would take the only copy of the text away and
+      // throw into nothing. Put it back and say what happened.
+      const failed = () => {
+        showSnack(data.share, null, null);
+        say('Could not copy. Long-press the text to copy it manually.');
+      };
+      // NOT `await navigator.clipboard...`: the write is chained, never awaited,
+      // because Safari only honours one made synchronously inside the gesture.
+      try {
+        navigator.clipboard.writeText(data.share)
+          .then(() => say('Copied. Paste it into the group chat.'), failed);
+      } catch { failed(); }
+    });
+  }
 }
 
 async function deletePlan(id) {
   const data = await mutate(`/api/plan/${id}`, {}, { method: 'DELETE' });
   if (data && data.previous) {
-    showSnack('Plan removed', 'Undo', () => mutate('/api/plan', { ...data.previous }));
+    // Name what went, slot included: on a day with a morning plan and an evening
+    // one, "Plan removed" does not tell you whether you hit the right button.
+    showSnack(`Removed "${data.previous.title}" (${slotLabel(data.previous.slot)})`, 'Undo',
+      () => mutate('/api/plan', { ...data.previous }));
   }
 }
 
@@ -1002,6 +1173,12 @@ function wire() {
       if (store.expanded.has(k)) store.expanded.delete(k); else store.expanded.add(k);
       render(); return;
     }
+    const makePlan = e.target.closest('[data-makeplan]');
+    if (makePlan) {
+      const [day, slot] = makePlan.dataset.makeplan.split('|');
+      await addPlanFlow(day, slot);
+      return;
+    }
     const openBtn = e.target.closest('[data-open]');
     if (openBtn) { openDay(openBtn.dataset.open); return; }
     const busyBtn = e.target.closest('[data-busy]');
@@ -1034,7 +1211,17 @@ function wire() {
     const colBtn = e.target.closest('[data-col]');
     if (colBtn) { columnFill(Number(colBtn.dataset.col)); return; }
     const showAll = e.target.closest('[data-showall]');
-    if (showAll) { store.showAll = Number(showAll.dataset.showall); render(); return; }
+    if (showAll) {
+      // Tapping the same band's expander again collapses it, so the one button
+      // is both "Show all" and "Show fewer".
+      const n = Number(showAll.dataset.showall);
+      store.showAll = store.showAll === n ? null : n;
+      render();
+      say(store.showAll === n
+        ? `Showing all ${showAll.dataset.showtotal} options with ${n} free`
+        : 'Showing the first five');
+      return;
+    }
     const quick = e.target.closest('[data-quick]');
     if (quick) { quickFill(quick.dataset.quick); return; }
     const save = e.target.closest('[data-savepattern]');
@@ -1141,7 +1328,12 @@ async function doConfirm() {
     const [day, slot] = k.split('|');
     return { day, slot, state };
   });
-  const data = await mutate('/api/confirm', { overrides });
+  // Send the window explicitly. Without it the server falls back to a
+  // today-anchored fortnight, which for anyone already filled in is entirely
+  // slots it will (correctly) skip.
+  const data = await mutate('/api/confirm', {
+    overrides, from: store.confirmFrom, to: store.confirmTo,
+  });
   if (data) { store.overrides = {}; nav('/'); }
 }
 

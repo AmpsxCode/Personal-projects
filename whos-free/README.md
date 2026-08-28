@@ -31,13 +31,25 @@ D1 database automatically**, connects Workers Builds, and deploys to a
 > doesn't, go to **D1 SQL database → Create**, name it `whos-free-db`, and paste
 > its UUID over `PLACEHOLDER`. Do not run `wrangler d1 create`.
 
-**3. Add the one secret.**
-Your Worker → **Settings** → **Variables and Secrets** → **Add** → type **Secret**,
-name `SESSION_SECRET`, value = any long random string (mash the keyboard, 40+
-characters). **Deploy**.
+**3. Nothing. There is no secret to add.**
+The Worker generates its own HMAC signing key on first boot and stores it in the
+database.
 
-Until this exists the app shows a "one thing left" page instead of running, so you
-can't miss it.
+This used to require a `SESSION_SECRET` secret in the dashboard, and it was a
+genuinely bad idea: the secret has to be added by hand, and if it is added in the
+wrong order relative to a deploy, the running version comes up without it and
+every request 503s with no obvious cause. A key the app owns cannot be missing,
+cannot be forgotten, and cannot be wiped by a deploy.
+
+If a `SESSION_SECRET` secret *does* exist it takes precedence — so don't set one
+and then remove it later, or every session signed with it becomes invalid.
+
+The trade: the key lives in D1 rather than the secret store, readable by anyone
+with dashboard access to your account. For busy/free data among friends that is
+the same practical trust boundary, and the worst case if it leaks is that someone
+who *also* holds the group link can act as another person. Rotating it is one row:
+`DELETE FROM notes WHERE k = 'signing_key'` in the D1 console — which logs
+everyone out.
 
 **4. Open `/api/health` once.**
 `https://whos-free.<your-subdomain>.workers.dev/api/health`
@@ -280,8 +292,12 @@ Other things worth knowing:
 - **"Unexpected token '<'"** in a browser console means an `/api/*` request got
   served `index.html`. That means `assets.run_worker_first` in `wrangler.jsonc` has
   been changed or removed. It is load-bearing.
-- **Everyone logged out at once:** `SESSION_SECRET` changed.
-- **Nobody can join:** check `SESSION_SECRET` exists at all.
+- **Everyone logged out at once:** the signing key changed — either the
+  `signing_key` row was deleted, or a `SESSION_SECRET` secret was added or removed
+  (adding one overrides the stored key; removing it hands control back).
+- **A blank white page:** should now be impossible — every failure path renders a
+  visible message with the HTTP status. If you ever see one, the JavaScript failed
+  to load at all; check the browser console.
 
 ---
 

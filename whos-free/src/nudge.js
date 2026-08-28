@@ -1,7 +1,7 @@
 // Nudges. Sparing, personal, and specific about the stakes.
 
 import { formatShort, ordinalDay } from '../public/shared/plainday.js';
-import { buildBands, slotLabel } from '../public/shared/tally.js';
+import { WEEKEND_SLOTS, buildBands, formatTally, slotLabel, tally } from '../public/shared/tally.js';
 import { CONFIG } from './config.js';
 
 /**
@@ -42,6 +42,38 @@ export function personalNudge(state, roster, personId, url) {
 }
 
 /**
+ * The line you paste into the group chat the moment a plan exists.
+ *
+ * The tally is printed with formatTally so "not answered" is always visible:
+ * the honest sentence is "5 free · 1 maybe · 1 not answered", never "5 coming".
+ * Free is not coming - nobody has been asked to commit, and a plan announcement
+ * that quietly promotes silence or a maybe into a headcount is the one lie this
+ * app must never tell.
+ */
+export function planAnnounce(state, roster, plan, origin, slug) {
+  const entries = (state.days[plan.day] && state.days[plan.day][plan.slot]) || {};
+  const t = tally(entries, roster);
+  const note = plan.note ? ` (${plan.note})` : '';
+  return `We're on for ${formatShort(plan.day)}, ${slotLabel(plan.slot)} - ${plan.title}${note}. ${formatTally(t)}. ${origin}/g/${slug}`;
+}
+
+/**
+ * The soonest plan inside the window this text is headed with.
+ *
+ * Not state.plans[0]: the query cannot be trusted to have put the earliest slot
+ * first, and it reaches past the horizon - a text that says "the next few
+ * weeks" must not lead with something three months out. WEEKEND_SLOTS is the
+ * clock order, so its index is the tiebreak within a day.
+ */
+function nextPlan(state) {
+  const within = (state.plans || []).filter((p) => p.day >= state.from && p.day <= state.to);
+  within.sort((a, b) => (a.day === b.day
+    ? WEEKEND_SLOTS.indexOf(a.slot) - WEEKEND_SLOTS.indexOf(b.slot)
+    : (a.day < b.day ? -1 : 1)));
+  return within[0] || null;
+}
+
+/**
  * The weekly text for the group chat.
  *
  * DELIBERATELY NAMES NOBODY. The app's band rows name who is missing because
@@ -56,6 +88,12 @@ export function weeklyDigest(state, roster, origin, slug) {
     state.days, roster, state.group.quorum, state.from, state.to, 3,
   );
   const lines = [`${state.group.name} - the next few weeks:`];
+
+  // The agreed plan leads, because it is the thing the group most needs to know
+  // and the reason this text exists at all. Still names nobody - not even the
+  // organiser.
+  const plan = nextPlan(state);
+  if (plan) lines.push(`- Plan: ${formatShort(plan.day)} ${slotLabel(plan.slot)} - ${plan.title}`);
 
   if (bands.length) {
     for (const band of bands.slice(0, 2)) {

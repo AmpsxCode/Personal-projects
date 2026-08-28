@@ -117,6 +117,30 @@ async function joinAs(ctx, who) {
 
 // ------------------------------------------------------- taps: a first-timer --
 
+console.log('\n== no failure path renders a blank page');
+{
+  // The bug this guards: both panels in index.html start hidden, and say()
+  // writes to a screen-reader-only region. So any error path that merely
+  // returned left a blank white page with no clue what had happened - which is
+  // exactly what a 503 from a misconfigured Worker produced in the wild.
+  const cases = [
+    [503, '<h1>One thing left</h1>', 'text/html', '503 HTML page'],
+    [500, '{"error":"SERVER_ERROR"}', 'application/json', '500 JSON'],
+    [200, 'not json at all', 'application/json', '200 unparseable body'],
+    [401, '{"error":"NO_SESSION"}', 'application/json', '401 no session'],
+  ];
+  for (const [status, body, contentType, label] of cases) {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 700 } });
+    const page = await ctx.newPage();
+    await page.route('**/api/state*', (r) => r.fulfill({ status, contentType, body }));
+    await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1500);
+    const txt = (await page.locator('body').innerText()).replace(/\s+/g, ' ').trim();
+    ok(txt.length > 0, `${label} shows something visible, not a blank page`);
+    await ctx.close();
+  }
+}
+
 console.log('\n== the invite page, both roster states');
 {
   const ctx = await browser.newContext({ viewport: { width: 360, height: 667 } });
@@ -248,7 +272,11 @@ console.log('\n== section 8.2: cold link to fully answered');
     const row = (await page.locator('.band .slot-row').first().innerText()).replace(/\s+/g, ' ').trim();
     console.log(`       reads as: "${head}"  ->  "${row}"`);
     ok(/free/i.test(head), 'the top section is a headcount band');
-    ok(/missing:|everyone/.test(row), 'the first row names who is missing');
+    // The row names the buckets that still need chasing, one clause each. It
+    // deliberately never says "missing" - see WHO_CLAUSES in public/app.js and
+    // the assertion in test/tally.test.js - so match the labels it does use.
+    ok(/no answer yet:|not confirmed:|can't make it:|maybe:|worth a re-check:|everyone/.test(row),
+      'the first row names who still needs chasing');
     ok(/not answered/.test(row), 'every row carries a not-answered count');
   }
   const text = await page.locator('#app').innerText();
@@ -395,6 +423,20 @@ console.log('\n== section 18: two phones');
     const el = document.querySelector('.band .band-head h2');
     return el ? el.textContent.trim() : '(none)';
   });
+  // Set the precondition instead of inheriting it. This test needs Tom's mark
+  // ABSENT so that adding it moves "4 free" to "5 free"; on a re-run against a
+  // database that already holds it, nothing changes and the poll looks broken.
+  // Clearing is idempotent - state:null deletes the row, or no row is deleted.
+  await pa.evaluate(() => fetch('/api/mark', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      day: '2026-09-26', slot: 'AFTERNOON', state: null,
+      today: '2026-08-25', opId: crypto.randomUUID(),
+    }),
+  }));
+  await pa.reload({ waitUntil: 'networkidle' });
+  await pb.reload({ waitUntil: 'networkidle' });
+
   const beforeB = await topBand(pb);
   ok(/free/.test(beforeB), `the other phone starts showing "${beforeB}"`);
 

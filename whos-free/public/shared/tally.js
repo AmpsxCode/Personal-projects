@@ -143,6 +143,28 @@ export function confirmedThrough(days, personId, today, horizonDays) {
   return last;
 }
 
+/**
+ * The window that "Add 2 more weeks" should actually add.
+ *
+ * Starting at today is wrong for anyone who is already filled in: every slot in
+ * a today-anchored window is already EXPLICIT and not stale, the server
+ * correctly skips all of them, and so the most diligent person in the group taps
+ * the app's one recurring ask and gets `written: 0` with nothing to show for it.
+ * The window has to ROLL FORWARD from wherever their confirmed run ends.
+ *
+ * Returns { from, to } — or { from: null } when their run already reaches as far
+ * ahead as the app loads, which is a real state and needs its own screen rather
+ * than an empty list of rows.
+ */
+export function nextConfirmWindow(confirmedThrough, today, confirmDays, horizonDays) {
+  const horizonEnd = format(addDays(parse(today), horizonDays - 1));
+  const from = confirmedThrough ? format(addDays(parse(confirmedThrough), 1)) : today;
+  if (compare(from, horizonEnd) > 0) return { from: null, to: null, horizonEnd };
+  let to = format(addDays(parse(from), confirmDays - 1));
+  if (compare(to, horizonEnd) > 0) to = horizonEnd;
+  return { from, to, horizonEnd };
+}
+
 /** Every (day, slot) pair in the window, in calendar order. */
 export function enumerateSlots(fromDay, toDay) {
   const out = [];

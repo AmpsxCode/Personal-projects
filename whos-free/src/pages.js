@@ -81,7 +81,7 @@ export async function joinPage(request, env, slug, nowMs) {
 
   const body = `
     <main class="pad join" data-slug="${esc(group.slug)}" data-cap="${CONFIG.ROSTER_CAP}">
-      <h1>${esc(group.name)}</h1>
+      <h1>${esc(group.name)} <span aria-hidden="true">🌱</span></h1>
       <p class="lede">Say which evenings and weekends you're free. Nobody sees <em>what</em> you're doing &mdash; just free, maybe or busy.</p>
       ${roster.length ? `<p class="status">${esc(status.line)}</p>` : ''}
 
@@ -183,12 +183,14 @@ export function shell({ title, origin, og, body, script }) {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>${esc(title)}</title>
 <link rel="stylesheet" href="/app.css">
-<meta name="theme-color" content="#1d2433" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#f7f8fb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#2e323f" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#dcecdc" media="(prefers-color-scheme: light)">
 ${tags}
 </head>
 <body>
+<div class="device">
 ${body}
+</div>
 ${script ? `<script type="module" src="/${script}.js"></script>` : ''}
 </body>
 </html>`;

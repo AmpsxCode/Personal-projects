@@ -1,24 +1,24 @@
 # Verification
 
-Everything below was run, not estimated. 128 checks across three layers.
+Everything below was run, not estimated. **179 checks** across three layers.
 
 Re-run it yourself:
 
 ```bash
 npm install && npm run test:tz                     # 39 unit checks x 4 timezones
 npx wrangler dev --config wrangler.dev.jsonc       # then, in another terminal:
-cd test/e2e && npm install && node run.mjs         # 41 browser checks
+cd test/e2e && npm install && node run.mjs         # 45 browser checks
 ```
 
 ---
 
-## Unit suites — 39 checks, four timezones
+## Unit suites — 86 checks, four timezones
 
 ```
-TZ=Europe/London          # pass 39 # fail 0
-TZ=UTC                    # pass 39 # fail 0
-TZ=Pacific/Auckland       # pass 39 # fail 0
-TZ=America/Los_Angeles    # pass 39 # fail 0
+TZ=Europe/London          # pass 86 # fail 0
+TZ=UTC                    # pass 86 # fail 0
+TZ=Pacific/Auckland       # pass 86 # fail 0
+TZ=America/Los_Angeles    # pass 86 # fail 0
 ```
 
 London first, because it is the only one of those zones that reproduces the BST
@@ -82,10 +82,10 @@ A generated nudge, live:
 
 > *"Sat 5 Sep evening has 2 of 7 — you're one of 5 we're missing. One tap: …"*
 
-## Browser — 41 checks, real Chromium, real pixels
+## Browser — 45 checks, real Chromium, real pixels
 
 ```
-41 passed, 0 failed
+45 passed, 0 failed
 ```
 
 ### The invite page, in both roster states
@@ -219,3 +219,87 @@ no test:
   interval, until the watching page was brought to the front.
 - Inherited a quorum of 5 left behind by another suite. It now sets its own
   preconditions.
+
+
+---
+
+## Round two: the use-case review
+
+Fifteen agents, seventy minutes. Four reviewers each took a different lens on
+"what does a friend group actually need", reading real source before claiming
+anything. A prioritiser cut 40 findings to five safe changes and recorded why it
+rejected the other twelve. Builders ran ONE AT A TIME with the test suite gating
+each — they all edit public/app.js, so parallel writers would clobber each other.
+Then three verifiers ran in parallel: one live, one auditing the ten hard
+invariants statically, one paid to find what was wrong with each diff.
+
+Commits produced:
+
+```
+e4d10cd Import the function I just started calling
+e7d01ba Make "Add 2 more weeks" actually add two more weeks
+efc57c3 Fix two browser-suite tests that were testing the suite, not the app
+cda769d A refused clipboard has to say so, and the plan buttons have to say which slot
+518a1cf Order plans by the clock, not by the spelling of the slot
+1bb2bc6 Stop createPlan caching a response that has no announcement in it
+bf201f7 Give every day cell back the 2px the UA stylesheet took
+565f740 Make "Show all N" actually show them
+51139fa Stop calling people who answered "missing"
+cf5b850 Say something when a plan is made, and make it pasteable
+c390f62 Carry the slot you were looking at into the plan you create
+20e4b7d Fix undoBulk destroying marks it was meant to restore
+```
+
+### What it caught that the existing 128 checks did not
+
+1. **`undoBulk` was destroying the marks it existed to restore.** The bulk
+   endpoint cross-products days x slots, but undo grouped changes by previous
+   value alone and sent the union of days with the union of slots — so each group
+   wrote over every combination, and the CLEAR group, arriving last, deleted what
+   the earlier groups had just put back. Mark a weekend busy in bulk, hit Undo,
+   and your Saturday morning and Sunday evening were gone. Now grouped by
+   (value, slot), with an exhaustive 4^7 round-trip test over every mixed
+   starting state.
+
+2. **Every month-grid day button was 42.56px wide, under the 44px floor.** The
+   browser's default `td` padding was never reset. The restyle introduced it by
+   moving the grid gap from 2px to 3px, and my own target check printed it as
+   "43x74" — which rounds past a glance. All 42 cells were in violation.
+
+3. **`createPlan` cached its idempotency response before the announcement
+   existed**, so any replay created a plan with no announcement and no error.
+
+4. **The weekly digest named the wrong plan.** Plans came back ordered by slot
+   alphabetically — AFTERNOON, EVENING, MORNING — so a Saturday morning plan was
+   never mentioned while the evening one was presented as *the* plan.
+
+5. **"Add 2 more weeks" did nothing for anyone already filled in.** The confirm
+   screen was anchored at today, so every slot in the window was already explicit
+   and the server correctly skipped all of it: the most diligent person in the
+   group tapped the app's one recurring ask and got `written: 0`. And a flawless
+   confirm left `confirmedThrough` at today+13 while the ring wanted 14, so their
+   own chip stayed hollow. The window now rolls forward from where their run ends.
+   *(Deferred by the prioritiser purely for its five-item cap, then fixed by hand
+   — it was the worst bug in the set.)*
+
+6. **Copy that made people look bad.** Everyone who was not a definite yes got
+   lumped into `missing:`, including people who had answered "busy". A row now
+   reads `can't make it: Antonio · no answer yet: Annabelle`, which distinguishes
+   someone who replied from someone who is ignoring the app.
+
+### What it got wrong
+
+Two of three verifiers failed the round, and one of those failures was the suite
+testing itself rather than the app: an e2e assertion still looked for the word
+`missing:` that the copy change had deliberately removed. Worth recording,
+because a test that fails for its own reasons costs more time than no test.
+
+One finding also overstated its blast radius, claiming the plan-announcement
+defect broke "the whole offline drain path" when `drain()` never reads a response
+body at all. The defect was real; the reasoning about it was not.
+
+I also had to fix one of my own: I added the rolling confirm window and committed
+it before running the browser suite, and the import was missing. The suite caught
+it in seconds — and the failure surfaced as a visible "Something broke starting
+up: nextConfirmWindow is not defined" rather than the blank page it would have
+been before round one.

@@ -3,13 +3,13 @@
 // batch() with the version bump.
 
 import { isValid } from '../public/shared/plainday.js';
-import { validatePattern } from '../public/shared/tally.js';
+import { slotsFor, validatePattern } from '../public/shared/tally.js';
 import { buildAck } from './ack.js';
 import { CONFIG, COPY } from './config.js';
 import {
   DEFAULT_GROUP_NAME, bumpVersion, loadGroup, pruneOpsStatement, readVersion,
 } from './bootstrap.js';
-import { nudgeNoteKey, personalNudge, weeklyDigest } from './nudge.js';
+import { nudgeNoteKey, personalNudge, planAnnounce, weeklyDigest } from './nudge.js';
 import * as pin from './pin.js';
 import { buildState, windowFor } from './read.js';
 import { clearCookie, currentSession, nudgeToken, sessionCookie } from './session.js';
@@ -495,6 +495,9 @@ async function createPlan(request, env, nowMs) {
   const { group, person } = auth;
   const body = await request.json().catch(() => null);
   if (!body || !isValid(body.day) || !validSlot(body.slot)) return fail(400, 'BAD_REQUEST');
+  // A slot the day does not have. A Tuesday has no morning, so buildState would
+  // never render this plan and it would sit in the database invisible.
+  if (!slotsFor(body.day).includes(body.slot)) return fail(400, 'BAD_SLOT');
   const title = cleanName(body.title, 60);
   if (!title) return fail(400, 'BAD_TITLE', 'Give it a name so people know what it is.');
   const replay = await seenOp(env.DB, body.opId);
@@ -506,13 +509,35 @@ async function createPlan(request, env, nowMs) {
     ok: true,
     plan: { id, day: body.day, slot: body.slot, title, note, createdBy: person.id },
   };
+  // The opId is recorded AFTER the response is complete, exactly as mark() and
+  // bulk() do it. Recording it in this batch would cache a body with no
+  // version, no ack and no share - so a replay, and every offline drain is one,
+  // would create the plan, announce nothing, and report no error.
   await commit(env, group.slug, [
     env.DB.prepare(
       'INSERT INTO plans (id, group_slug, day, slot, title, note, created_by, created_at, updated_at) '
       + 'VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)',
     ).bind(id, group.slug, body.day, body.slot, title, note, person.id, nowMs),
-  ], body.opId, person.id, nowMs, response);
+    // Drop the cached digest in the SAME batch as the insert and the version
+    // bump (one atomic write). Otherwise the stored snapshot survives for
+    // NUDGE_TTL_MS - seven days - and the text built for the group chat never
+    // mentions the plan that was just agreed.
+    env.DB.prepare('DELETE FROM notes WHERE k = ?1').bind(nudgeNoteKey(group.slug)),
+  ], null, person.id, nowMs, null);
   response.version = await readVersion(env.DB, group.slug);
+
+  // The pasteable line. A one-day window is all planAnnounce reads, so this
+  // costs one small read rather than a whole horizon.
+  const today = isValid(body.today) ? body.today : body.day;
+  const fresh = await buildState(env, group, person.id, body.day, body.day, today, nowMs);
+  // `ack` is what every other mutation returns and what the home screen says.
+  // `share` is the identical string, named for what the client does with it:
+  // straight into the clipboard, then into the group chat.
+  response.ack = planAnnounce(fresh, fresh.members, response.plan, originOf(request), group.slug);
+  response.share = response.ack;
+  if (body.opId) {
+    await env.DB.batch([recordOpStatement(env.DB, body.opId, person.id, nowMs, response)]);
+  }
   return json(response);
 }
 

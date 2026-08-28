@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Who's Free</title>
 <link rel="stylesheet" href="/app.css">
-<meta name="theme-color" content="#283238" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#f6fafd" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#2e323f" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#dcecdc" media="(prefers-color-scheme: light)">
 <meta name="robots" content="noindex, nofollow">
 </head>
 <body>
@@ -19,17 +19,19 @@
      cookie, and this path is served straight off the static asset layer so the
      Worker is never invoked for it. The first /api/state returns 401 and this
      panel is what the reader sees - no guessing a slug, no 500. -->
-<main id="noSession" class="pad" hidden>
-  <h1>Open your invite link</h1>
-  <p class="lede">This app works from the link in your group chat. Ask whoever set it up to send it again.</p>
-</main>
+<div class="device">
+  <main id="noSession" class="pad" hidden>
+    <h1>Open your invite link 🌱</h1>
+    <p class="lede">This app works from the link in your group chat. Ask whoever set it up to send it again.</p>
+  </main>
 
-<div id="app" hidden></div>
+  <div id="app" hidden></div>
+</div>
 
 <noscript>
   <main class="pad">
-    <h1>Who's Free</h1>
-    <p>This needs JavaScript to show the calendar. Sorry.</p>
+    <h1>Who's Free 🌱</h1>
+    <p>This needs JavaScript to show the calendar. Sorry!</p>
   </main>
 </noscript>
 

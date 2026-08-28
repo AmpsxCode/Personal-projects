@@ -5,10 +5,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { addDays, format, parse, range } from '../public/shared/plainday.js';
+import { readFileSync } from 'node:fs';
+import { addDays, diffDays, format, parse, range } from '../public/shared/plainday.js';
 import {
   BUCKETS, buildBands, confirmedThrough, enumerateSlots, formatTally, isStale,
-  missing, myFreeSlots, names, slotsFor, tally, validatePattern,
+  missing, myFreeSlots, names, nextConfirmWindow, slotsFor, tally, validatePattern,
 } from '../public/shared/tally.js';
 import { CONFIG } from '../public/shared/config.js';
 
@@ -269,4 +270,170 @@ test('an untoggled pattern control derives to not-answered, never to busy', () =
     assert.equal(v, null);
     assert.notEqual(v, false, 'a blank must never become an assumed BUSY');
   }
+});
+
+// ------------------------------------------------- the who-still-needs-chasing line ---
+//
+// "missing" is the word that turns an answer into a failure. It belongs to
+// silence and nothing else. Kit marking himself busy for six straight weeks so
+// nobody has to chase him must not read like Sam, who has never opened the app.
+// missing() itself stays exported and unchanged above - it is the SENTENCE that
+// was wrong, not the bucket maths.
+
+const APP = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+const escHtml = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/**
+ * The real client function and its real label table, lifted out of public/app.js
+ * rather than copied, so this suite fails if the shipped wording regresses.
+ * app.js touches the DOM at module scope and cannot be imported, so its two
+ * free names - esc and names - are injected instead.
+ */
+function loadSlotWho() {
+  const start = APP.indexOf('\nconst WHO_CLAUSES = [');
+  assert.ok(start > -1, 'public/app.js must define a top-level WHO_CLAUSES');
+  const fnStart = APP.indexOf('\nfunction slotWho(t, people) {', start);
+  assert.ok(fnStart > start, 'public/app.js must define a top-level slotWho(t, people)');
+  const end = APP.indexOf('\n}\n', fnStart);
+  assert.ok(end > fnStart, 'could not find the end of slotWho');
+  const body = APP.slice(start, end + 3);
+  // eslint-disable-next-line no-new-func
+  return new Function('esc', 'names', `${body}; return slotWho;`)(escHtml, names);
+}
+
+const slotWho = loadSlotWho();
+const plain = (html) => html.replace(/<[^>]*>/g, '');
+
+test('someone who answered busy is never called missing', () => {
+  const t = tally({ p0: E('BUSY') }, R(1));
+  assert.equal(plain(slotWho(t, R(1))), "can't make it: P0");
+  assert.doesNotMatch(slotWho(t, R(1)), /missing/i, 'an answer is not a failure to answer');
+});
+
+test('only silence gets the no-answer words', () => {
+  const roster = R(2);
+  const t = tally({ p0: E('BUSY') }, roster);
+  assert.equal(plain(slotWho(t, roster)), "can't make it: P0 · no answer yet: P1");
+});
+
+test('a pattern-derived value is the app guessing, not the person going quiet', () => {
+  const roster = R(1);
+  const t = tally({ p0: E('FREE', 'PATTERN') }, roster);
+  assert.equal(plain(slotWho(t, roster)), 'not confirmed: P0');
+  assert.doesNotMatch(slotWho(t, roster), /missing|no answer/i);
+});
+
+test('a stale answer asks for a re-check rather than being erased', () => {
+  const roster = R(1);
+  const t = tally({ p0: E('FREE', 'EXPLICIT', true) }, roster);
+  assert.equal(plain(slotWho(t, roster)), 'worth a re-check: P0');
+});
+
+test('a maybe-person is named exactly once on the line', () => {
+  const roster = R(3);
+  const t = tally({ p0: E('BUSY'), p1: E('MAYBE'), p2: E('FREE') }, roster);
+  const line = plain(slotWho(t, roster));
+  assert.equal(line, "can't make it: P0 · maybe: P1");
+  assert.equal(line.split('P1').length - 1, 1, 'P1 was printed twice by the old missing+maybe pair');
+});
+
+test('every non-free bucket gets its own clause, in one fixed order', () => {
+  const roster = R(6);
+  const t = tally({
+    p0: E('FREE'),
+    p1: E('BUSY'),
+    p2: E('MAYBE'),
+    p3: E('FREE', 'PATTERN'),
+    p4: E('FREE', 'EXPLICIT', true),
+  }, roster);
+  assert.equal(
+    plain(slotWho(t, roster)),
+    "can't make it: P1 · maybe: P2 · no answer yet: P5 · not confirmed: P3 · worth a re-check: P4",
+  );
+  // Everyone who is not a definite free appears, so the line stays as
+  // actionable as the old missing list was - it just stops slandering them.
+  for (const id of missing(t)) {
+    const name = names(roster, [id]);
+    assert.match(plain(slotWho(t, roster)), new RegExp(name), `${name} must still be named`);
+  }
+});
+
+test('an empty bucket prints no clause at all', () => {
+  const roster = R(2);
+  const t = tally({ p0: E('FREE'), p1: E('MAYBE') }, roster);
+  assert.equal(plain(slotWho(t, roster)), 'maybe: P1');
+});
+
+test('all free and nobody silent is still everyone\u2019s in', () => {
+  const roster = R(3);
+  const t = tally({ p0: E('FREE'), p1: E('FREE'), p2: E('FREE') }, roster);
+  assert.equal(slotWho(t, roster), 'everyone\u2019s in');
+});
+
+test('the line never names who IS free, so it cannot be read as a free count', () => {
+  const roster = R(2);
+  const t = tally({ p0: E('FREE'), p1: E('BUSY') }, roster);
+  const line = slotWho(t, roster);
+  assert.doesNotMatch(line, /\bfree\b/i);
+  assert.doesNotMatch(line, /P0/, 'a definite free is not chased');
+  // The exact counts, "not answered" included, live on the next line.
+  assert.equal(formatTally(t), '1 free · 1 busy · 0 not answered');
+});
+
+test('names are escaped before they reach the markup', () => {
+  const roster = [{ id: 'p0', name: '<script>x</script>' }];
+  const t = tally({}, roster);
+  const line = slotWho(t, roster);
+  assert.doesNotMatch(line, /<script>/);
+  assert.match(line, /&lt;script&gt;/);
+});
+
+test('the word "missing" is gone from the row markup but missing() still exists', () => {
+  const start = APP.indexOf('\nfunction slotRow(r, isTop) {');
+  assert.ok(start > -1, 'public/app.js must define a top-level slotRow(r, isTop)');
+  const fn = APP.slice(start, APP.indexOf('\n}\n', start));
+  assert.doesNotMatch(fn, /missing/i, 'slotRow must not print or compute a "missing" list');
+  assert.equal(typeof missing, 'function', 'missing() stays exported from tally.js');
+});
+
+// ---------------------------------------------------- the recurring ask ------
+
+test('"Add 2 more weeks" rolls forward instead of re-asking what is already done', () => {
+  const today = '2026-08-25';
+  const H = 42, C = 14;
+
+  // Nobody confirmed yet: start today.
+  assert.deepEqual(nextConfirmWindow(null, today, C, H),
+    { from: '2026-08-25', to: '2026-09-07', horizonEnd: '2026-10-05' });
+
+  // THE BUG THIS GUARDS: anchored at today, every slot in this window is
+  // already EXPLICIT and not stale, so the server skips all of them and the
+  // most diligent person in the group gets written:0 for their trouble.
+  const rolled = nextConfirmWindow('2026-09-07', today, C, H);
+  assert.equal(rolled.from, '2026-09-08', 'starts the day after their run ends');
+  assert.equal(rolled.to, '2026-09-21');
+  assert.notEqual(rolled.from, today);
+
+  // Never ask about days the loaded window does not cover.
+  const clamped = nextConfirmWindow('2026-09-28', today, C, H);
+  assert.equal(clamped.to, clamped.horizonEnd, 'clamped to the horizon');
+  assert.ok(diffDays(parse(clamped.from), parse(clamped.to)) < C - 1, 'short final window');
+
+  // Already covered to the horizon is a real state, not an empty list.
+  assert.equal(nextConfirmWindow('2026-10-05', today, C, H).from, null);
+  assert.equal(nextConfirmWindow('2026-12-01', today, C, H).from, null);
+});
+
+test('a flawless confirm is enough to tick your own chip', () => {
+  // confirmedThrough after confirming today..today+13 is today+13, so the ring
+  // threshold has to be satisfied by 13 days of lead — not 14, or the one person
+  // who did exactly what the app asked is told they did not.
+  const today = '2026-08-25';
+  const win = nextConfirmWindow(null, today, CONFIG.CONFIRM_DAYS, 42);
+  const lead = diffDays(parse(today), parse(win.to));
+  assert.equal(lead, CONFIG.CONFIRM_DAYS - 1);
+  assert.ok(lead >= CONFIG.RING_FILLED_DAYS,
+    `confirming once gives ${lead} days of lead but the ring needs ${CONFIG.RING_FILLED_DAYS}`);
 });

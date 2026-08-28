@@ -89,7 +89,12 @@ export async function buildState(env, group, me, fromDay, toDay, today, nowMs) {
 
   const planRows = await env.DB.prepare(
     'SELECT id, day, slot, title, note, created_by, created_at FROM plans '
-    + 'WHERE group_slug = ?1 AND deleted_at IS NULL AND day >= ?2 ORDER BY day, slot',
+    + 'WHERE group_slug = ?1 AND deleted_at IS NULL AND day >= ?2 '
+    // ORDER BY slot would sort the slot NAMES: AFTERNOON, EVENING, MORNING. A
+    // Saturday parkrun would then file below that evening's dinner, and every
+    // reader of plans[0] - the digest, the day sheet - would name the wrong one.
+    // Sort by the clock instead.
+    + "ORDER BY day, CASE slot WHEN 'MORNING' THEN 0 WHEN 'AFTERNOON' THEN 1 ELSE 2 END",
   ).bind(group.slug, today).all();
 
   return {

@@ -58,18 +58,21 @@ export function contrast(a, b) {
 // only channel that is never allowed to count.
 export const VARIANTS = {
   notAnswered: { L: null, C: 0, h: 0, fill: 'none', border: 'dashed', glyph: 'none', label: 'Not answered' },
-  free: { L: 86, C: 34, h: 150, fill: 'solid', border: 'solid', glyph: 'check-solid', label: 'Free' },
-  maybe: { L: 64, C: 46, h: 78, fill: 'solid', border: 'solid', glyph: 'tilde', label: 'Maybe' },
-  busy: { L: 30, C: 26, h: 20, fill: 'hatch', border: 'none', glyph: 'cross-solid', label: 'Busy' },
-  dimFree: { L: 95, C: 12, h: 150, fill: 'solid', border: 'dashed-thin', glyph: 'check-outline', label: 'Assumed free' },
-  dimMaybe: { L: 76, C: 18, h: 78, fill: 'solid', border: 'dashed-thin', glyph: 'tilde-outline', label: 'Assumed maybe' },
-  dimBusy: { L: 47, C: 12, h: 20, fill: 'solid', border: 'dashed-thin', glyph: 'cross-outline', label: 'Assumed busy' },
+  // Meadow green, warmed towards yellow so it reads sunlit rather than clinical.
+  free: { L: 86, C: 30, h: 138, fill: 'solid', border: 'solid', glyph: 'check-solid', label: 'Free' },
+  // Butter / late-afternoon apricot.
+  maybe: { L: 64, C: 42, h: 68, fill: 'solid', border: 'solid', glyph: 'tilde', label: 'Maybe' },
+  // Dusty clay. Softer than a warning red, still dark enough for the band.
+  busy: { L: 30, C: 22, h: 22, fill: 'hatch', border: 'none', glyph: 'cross-solid', label: 'Busy' },
+  dimFree: { L: 95, C: 11, h: 138, fill: 'solid', border: 'dashed-thin', glyph: 'check-outline', label: 'Assumed free' },
+  dimMaybe: { L: 76, C: 17, h: 68, fill: 'solid', border: 'dashed-thin', glyph: 'tilde-outline', label: 'Assumed maybe' },
+  dimBusy: { L: 47, C: 11, h: 22, fill: 'solid', border: 'dashed-thin', glyph: 'cross-outline', label: 'Assumed busy' },
   // The day roll-up. Its fill is literally the free colour and the busy colour
   // meeting at a hard stop, so its representative luminance is the mean of the
   // two halves - which is inherently close to a flat mid-tone. That is why fill
   // PATTERN has to count as a channel: a hard diagonal stop is unmistakable in
   // greyscale in a way that no luminance threshold can express.
-  partly: { L: 70, C: 20, h: 150, fill: 'split', border: 'solid', glyph: 'half', label: 'Partly free', splitOf: ['free', 'busy'] },
+  partly: { L: 70, C: 18, h: 138, fill: 'split', border: 'solid', glyph: 'half', label: 'Partly free', splitOf: ['free', 'busy'] },
 };
 
 // Dark mode inverts the RAMP DIRECTION, not the lightness. "More free" has to
@@ -77,13 +80,13 @@ export const VARIANTS = {
 // cell on the screen.
 export const DARK = {
   notAnswered: { L: null, C: 0, h: 0 },
-  free: { L: 74, C: 40, h: 150 },
-  maybe: { L: 52, C: 44, h: 78 },
-  busy: { L: 26, C: 18, h: 20 },
-  dimFree: { L: 56, C: 16, h: 150 },
-  dimMaybe: { L: 42, C: 16, h: 78 },
-  dimBusy: { L: 30, C: 8, h: 20 },
-  partly: { L: 58, C: 18, h: 150 },
+  free: { L: 74, C: 36, h: 138 },
+  maybe: { L: 52, C: 40, h: 68 },
+  busy: { L: 26, C: 16, h: 22 },
+  dimFree: { L: 56, C: 15, h: 138 },
+  dimMaybe: { L: 42, C: 15, h: 68 },
+  dimBusy: { L: 30, C: 8, h: 22 },
+  partly: { L: 58, C: 16, h: 138 },
 };
 
 export function build(spec) {
@@ -94,10 +97,10 @@ export function build(spec) {
   return out;
 }
 
-export const PAGE_LIGHT = lch(98, 2, 250);
-export const PAGE_DARK = lch(20, 6, 250);
-export const INK_LIGHT = lch(22, 6, 250);
-export const INK_DARK = lch(94, 3, 250);
+export const PAGE_LIGHT = lch(96, 11, 88);   // cream paper
+export const PAGE_DARK = lch(21, 9, 280);    // dusk
+export const INK_LIGHT = lch(28, 12, 62);    // warm bark
+export const INK_DARK = lch(93, 8, 88);      // moonlight cream
 
 // The day roll-up heat ramp. Bucketed to FIVE steps, because a 12-step ramp is
 // indistinguishable, and kept inside the "free" hue so it never collides with
@@ -107,20 +110,20 @@ export const INK_DARK = lch(94, 3, 250);
 // The numeral in the cell is the primary encoding. This is redundant
 // reinforcement, which is why it is allowed to be subtle.
 export const RAMP_LIGHT = [
-  { L: 94, C: 10, h: 150 },
-  { L: 90, C: 18, h: 150 },
-  { L: 86, C: 26, h: 150 },
-  { L: 82, C: 34, h: 150 },
-  { L: 78, C: 42, h: 150 },
+  { L: 94, C: 9, h: 138 },
+  { L: 90, C: 16, h: 138 },
+  { L: 86, C: 23, h: 138 },
+  { L: 82, C: 30, h: 138 },
+  { L: 78, C: 37, h: 138 },
 ];
 
 // Dark mode inverts the RAMP DIRECTION: more free stays the brighter, more
 // prominent end. Flipping lightness instead would make the state people scan
 // for the dimmest thing on the screen.
 export const RAMP_DARK = [
-  { L: 42, C: 8, h: 150 },
-  { L: 50, C: 14, h: 150 },
-  { L: 58, C: 22, h: 150 },
-  { L: 66, C: 30, h: 150 },
-  { L: 74, C: 38, h: 150 },
+  { L: 42, C: 8, h: 138 },
+  { L: 50, C: 13, h: 138 },
+  { L: 58, C: 20, h: 138 },
+  { L: 66, C: 27, h: 138 },
+  { L: 74, C: 34, h: 138 },
 ];
